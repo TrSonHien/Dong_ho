@@ -75,6 +75,15 @@ const char* daysOfTheWeek[] = {
   "CN", "T2", "T3", "T4", "T5", "T6", "T7"
 };
 //------------------------------------------------------------------------------------------------------------------
+// Giai điệu và độ dài nốt
+int alarmMelody[] = {
+  NOTE_C4, NOTE_E4, NOTE_G4, NOTE_C5, NOTE_G4, NOTE_E4, NOTE_C4
+};
+int alarmNoteDurations[] = {
+  8, 8, 8, 4, 8, 8, 4
+};
+const int NUM_ALARM_NOTES = sizeof(alarmMelody) / sizeof(alarmMelody[0]);
+//------------------------------------------------------------------------------------------------------------------
 // Mảng chứa các tùy chọn cho menu chọn Báo thức/Đếm ngược
 const char* timerAlarmSelectOptions[] = {
   "1. Bao Thuc",
@@ -108,6 +117,8 @@ unsigned long timerDuration = 0; // Thời gian đếm ngược (tính bằng mi
 unsigned long timerStartTime = 0; // Thời điểm bắt đầu đếm ngược (millis())
 unsigned long timerRemainingTime = 0; // Thời gian còn lại khi tạm dừng
 bool timerRunning = false;     // Trạng thái đếm ngược (đang chạy/dừng)
+bool confirmMessageDisplayed = false;
+bool editTimeScreenDisplayed = false;
 
 bool timerAlarmSounding = false; 
 unsigned long timerAlarmStartTime = 0; // Thời điểm bắt đầu kêu báo thức/timer
@@ -126,6 +137,14 @@ static long prevDisplayedDay = -1;
 static long prevDisplayedMonth = -1;
 static long prevDisplayedYear = -1;
 static long prevDisplayedDayOfWeek = -1;
+static int currentAlarmNoteIndex = 0; // Chỉ số nốt hiện tại đang chơi
+static unsigned long nextAlarmNoteTime = 0; // Thời điểm nốt tiếp theo sẽ bắt đầu
+static bool inAlarmRestPeriod = false;
+static int currentBeepCount = 0; // Đếm số tiếng 'tút' đã phát
+static unsigned long nextBeepTime = 0; // Thời điểm tiếng 'tút' tiếp theo sẽ phát
+static bool isTonePlaying = false; // Cờ cho biết tiếng 'tút' đang phát hay không
+static bool inTimerRestPeriod = false; // Cờ mới: đang trong thời gian nghỉ sau khi hoàn thành 3 tiếng 'tút'
+const unsigned long TIMER_SEQUENCE_REST_INTERVAL_MS = 1000; // Khoảng nghỉ 1 giây giữa các chuỗi "tút tút tút"
 
 //------------------------------------------------------------------------------------------------------------------
 const char* stopwatchMenuOptions[] {
@@ -179,8 +198,8 @@ void checkAlarm();
 void handleStopwatchMenu();
 void displayStopwatchTime();
 void handleResetRTCConfirm();
-void playAlarmTone();
-void playTimerTone();
+void playAlarmToneNonBlocking();
+void playTimerToneNonBlocking();
 void adjustTime(int dir);
 void nextStep();
 bool isButtonPressed(int buttonPin);
@@ -385,17 +404,6 @@ int daysInMonth(int month, int year) {
  */
 void showClock() {
   DateTime now = rtc.now(); // Lấy thời gian hiện tại từ RTC
-
-  // --- BỎ PHẦN NÀY ĐI: Không cần logic nhấp nháy nữa ---
-  // static unsigned long lastClockBlinkTime = 0;
-  // static bool clockBlinkOn = true;
-  // const long clockBlinkInterval = 500;
-  // if (millis() - lastClockBlinkTime > clockBlinkInterval) {
-  //   clockBlinkOn = !clockBlinkOn;
-  //   lastClockBlinkTime = millis();
-  // }
-  // ----------------------------------------------------
-
   // Lấy thứ dưới dạng số và đảm bảo nó trong phạm vi hợp lệ
   int dayIndex = now.dayOfTheWeek();
   if (dayIndex < 0 || dayIndex > 6) { 
@@ -446,13 +454,13 @@ void showClock() {
     if (now.hour() < 10) lcd.print("0");
     lcd.print(now.hour());
 
-    lcd.print(":"); // <--- LUÔN IN DẤU HAI CHẤM CỐ ĐỊNH
+    lcd.print(":"); 
 
     // In Phút (MM)
     if (now.minute() < 10) lcd.print("0");
     lcd.print(now.minute());
 
-    lcd.print(":"); // <--- LUÔN IN DẤU HAI CHẤM CỐ ĐỊNH
+    lcd.print(":"); 
 
     // In Giây (SS)
     if (now.second() < 10) lcd.print("0");
@@ -482,11 +490,9 @@ void resetClockDisplayFlags() {
  */
 void handleMainMenu() {
   lcd.setCursor(0, 0);
-  lcd.print("MENU CHINH       "); // Tiêu đề menu chính, đảm bảo xóa hết ký tự cũ
-  
-  // Hiển thị tùy chọn hiện tại trên dòng thứ hai
+  lcd.print("MENU CHINH       "); 
   lcd.setCursor(0, 1);
-  lcd.print("> "); // Dấu ">" để chỉ tùy chọn đang chọn
+  lcd.print("> ");
   lcd.print(mainMenuOptions[selectOptionIndex]); // In ra chuỗi tùy chọn
   // Đảm bảo xóa phần còn lại của dòng nếu tùy chọn mới ngắn hơn tùy chọn cũ
   for(int i=strlen(mainMenuOptions[selectOptionIndex]); i<14; i++) lcd.print(" ");
@@ -495,41 +501,44 @@ void handleMainMenu() {
   if (isButtonPressed(BTN_UP)) {
     selectOptionIndex = (selectOptionIndex - 1 + numMainMenuOptions) % numMainMenuOptions;
     Serial.print("Main Menu: Chon truoc: "); Serial.println(mainMenuOptions[selectOptionIndex]);
-    lcd.clear(); // Xóa màn hình để hiển thị menu mới hoàn chỉnh
+    lcd.clear(); 
   }
   // Xử lý nút DOWN: di chuyển lựa chọn xuống dưới, vòng lại khi đến cuối
   if (isButtonPressed(BTN_DOWN)) {
     selectOptionIndex = (selectOptionIndex + 1) % numMainMenuOptions;
     Serial.print("Main Menu: Chon sau: "); Serial.println(mainMenuOptions[selectOptionIndex]);
-    lcd.clear(); // Xóa màn hình để hiển thị menu mới hoàn chỉnh
+    lcd.clear(); 
   }
 
   // Xử lý nút OK: chọn chức năng
   if (isButtonPressed(BTN_OK)) {
     Serial.print("Main Menu: OK. Lua chon: ");
     Serial.println(mainMenuOptions[selectOptionIndex]);
-    
+
     // Chuyển trạng thái dựa trên lựa chọn
-switch (selectOptionIndex) {
-  case 0: // "1. Hen Gio"
-    menuState = TIMER_ALARM_SELECT; // Chuyển sang menu chọn Timer/Alarm
-    selectOptionIndex = 0; // Đặt lại lựa chọn cho menu con
-    lcd.clear();
-    break;
-  case 1: // "2. Bam Gio"
-    menuState = STOPWATCH_MENU; // Chuyển sang menu bấm giờ
-    selectOptionIndex = 0;
-    lcd.clear();
-    break;
-  case 2: // "3. Chinh Thoi Gian"
-    menuState = SET_TIME_DATE_MODE; // Chuyển sang menu con chọn ngày/giờ
-    selectOptionIndex = 0; // Đặt lại lựa chọn cho menu con
-    lcd.clear();
-    break;
-  case 3: // "4. Dat Lai RTC"
-    menuState = RESET_RTC_CONFIRM; // Chuyển sang màn hình xác nhận đặt lại RTC
-    lcd.clear();
-    break;
+    switch (selectOptionIndex) {
+      case 0: // "1. Hen Gio" (hoặc "1. Bao Thuc" nếu menuOptions thay đổi)
+        menuState = TIMER_ALARM_SELECT; // Chuyển sang menu chọn Timer/Alarm
+        selectOptionIndex = 0; // Đặt lại lựa chọn cho menu con (TIMER_ALARM_SELECT)
+        lcd.clear();
+        // Reset các cờ liên quan đến Timer/Alarm nếu có
+        // (Ví dụ nếu TIMER_ALARM_SELECT có màn hình chào mừng hoặc các cờ hiển thị riêng)
+        break;
+      case 1: // "2. Bam Gio"
+        menuState = STOPWATCH_MENU; // Chuyển sang menu bấm giờ
+        selectOptionIndex = 0; // Đặt lại lựa chọn cho menu con (STOPWATCH_MENU)
+        lcd.clear();
+        break;
+      case 2: // "3. Chinh Thoi Gian"
+        menuState = SET_TIME_DATE_MODE; // Chuyển sang menu con chọn ngày/giờ
+        selectOptionIndex = 0; // Đặt lại lựa chọn cho menu con (SET_TIME_DATE_MODE)
+        lcd.clear();
+        break;
+      case 3: // "4. Dat Lai RTC"
+        menuState = RESET_RTC_CONFIRM; // Chuyển sang màn hình xác nhận đặt lại RTC
+        lcd.clear();
+        confirmMessageDisplayed = false;
+        break;
     }
   }
 }
@@ -580,73 +589,87 @@ void handleSetTimeDateMode() {
  * Hiển thị giá trị đang chỉnh và nhấp nháy phần đó.
  */
 void handleEditTime() {
-  // Cập nhật trạng thái nhấp nháy định kỳ
+  // Cập nhật trạng thái nhấp nháy định kỳ cho các con số
   if (millis() - lastBlinkTime > blinkInterval) {
     blinkOn = !blinkOn; // Đảo ngược trạng thái nhấp nháy
     lastBlinkTime = millis(); // Reset thời gian
   }
 
-  lcd.setCursor(0, 0);
-  lcd.print("Chinh: "); // Tiêu đề "Chinh:" không nhấp nháy
+  // --- Kiểm soát việc vẽ lại toàn bộ màn hình ---
+  // Chỉ xóa và in tiêu đề khi MỚI vào chế độ chỉnh sửa hoặc khi chuyển giữa chỉnh Ngày/Giờ
+  if (!editTimeScreenDisplayed) {
+    lcd.clear(); // Xóa màn hình CHỈ KHI LẦN ĐẦU VÀO hoặc chuyển chế độ
+    if (setMode == SET_DATE) {
+      lcd.setCursor(0, 0);
+      lcd.print("Chinh ngay:"); // Tiêu đề cố định trên dòng 0
+    } else { // setMode == SET_TIME
+      lcd.setCursor(0, 0);
+      lcd.print("Chinh gio:"); // Tiêu đề cố định trên dòng 0
+    }
+    editTimeScreenDisplayed = true; // Đánh dấu là màn hình đã được vẽ
+  }
 
-  if (setMode == SET_DATE) { // Nếu đang chỉnh ngày/tháng/năm
-    // In phần Ngày
-    lcd.setCursor(7, 0); // Vị trí in Ngày
-    if (subStep == STEP_DAY && blinkOn) { // Nếu đang chỉnh ngày và hiệu ứng nhấp nháy bật
+  // --- In và cập nhật giá trị thời gian/ngày tháng ---
+  if (setMode == SET_DATE) {
+    // Dòng 1: DD/MM/YYYY
+    // Phần Ngày (DD)
+    lcd.setCursor(0, 1); // Bắt đầu từ cột 0, dòng 1
+    if (subStep == STEP_DAY && blinkOn) {
       lcd.print("  "); // In khoảng trắng để làm ẩn số
     } else {
-      if (setDay < 10) lcd.print("0"); // Thêm số 0 ở đầu nếu cần
+      if (setDay < 10) lcd.print("0");
       lcd.print(setDay);
     }
-    lcd.print("  "); // Xóa ký tự thừa nếu số thay đổi từ 2 chữ số xuống 1
+    lcd.print("/"); // Dấu phân cách
 
-    // In phần Tháng (dòng 1)
-    lcd.setCursor(0, 1); // Vị trí in Tháng
-    lcd.print("Thang: ");
+    // Phần Tháng (MM) - Vị trí tương đối sau DD/
     if (subStep == STEP_MONTH && blinkOn) {
       lcd.print("  ");
     } else {
       if (setMonth < 10) lcd.print("0");
       lcd.print(setMonth);
     }
-    
-    // In phần Năm (cùng dòng 1 với Tháng)
-    lcd.setCursor(11, 1); // Vị trí in Năm
-    lcd.print("Nam:");
+    lcd.print("/"); // Dấu phân cách
+
+    // Phần Năm (YYYY) - Vị trí tương đối sau MM/
     if (subStep == STEP_YEAR && blinkOn) {
-      lcd.print("    "); // Xóa 4 ký tự cho năm
+      lcd.print("    "); // 4 khoảng trắng cho năm
     } else {
       lcd.print(setYear);
     }
+    // Đảm bảo xóa sạch phần còn lại của dòng nếu chuỗi ngắn hơn (ví dụ 10/10/2025 so với 10/10/2)
+    // Cần đủ khoảng trắng để ghi đè lên các ký tự cũ trên LCD 16x2
+    lcd.print("    "); // Khoảng trắng để điền đầy phần còn lại của dòng
   } else { // setMode == SET_TIME - Nếu đang chỉnh giờ/phút/giây
-    // In phần Giờ
-    lcd.setCursor(7, 0); // Vị trí in Giờ
+    // Dòng 1: HH:MM:SS
+    // Phần Giờ (HH)
+    lcd.setCursor(0, 1); // Bắt đầu từ cột 0, dòng 1
     if (subStep == STEP_HOUR && blinkOn) {
       lcd.print("  ");
     } else {
       if (setHour < 10) lcd.print("0");
       lcd.print(setHour);
     }
-    lcd.print(":"); // Dấu phân cách không nhấp nháy
+    lcd.print(":"); // Dấu phân cách
 
-    // In phần Phút
-    lcd.setCursor(10, 0); // Vị trí in Phút
+    // Phần Phút (MM) - Vị trí tương đối sau HH:
     if (subStep == STEP_MINUTE && blinkOn) {
       lcd.print("  ");
     } else {
       if (setMinute < 10) lcd.print("0");
       lcd.print(setMinute);
     }
-    lcd.print(":"); // Dấu phân cách không nhấp nháy
+    lcd.print(":"); // Dấu phân cách
 
-    // In phần Giây
-    lcd.setCursor(13, 0); // Vị trí in Giây
+    // Phần Giây (SS) - Vị trí tương đối sau MM:
     if (subStep == STEP_SECOND && blinkOn) {
       lcd.print("  ");
     } else {
       if (setSecond < 10) lcd.print("0");
       lcd.print(setSecond);
     }
+    // Đảm bảo xóa sạch phần còn lại của dòng
+    lcd.print("      "); // Khoảng trắng để điền đầy phần còn lại của dòng
   }
 
   // --- Xử lý nút UP/DOWN để điều chỉnh giá trị ---
@@ -662,14 +685,15 @@ void handleEditTime() {
     blinkOn = true; // Đảm bảo phần tử hiển thị ngay sau khi chỉnh
     lastBlinkTime = millis(); // Reset thời gian nhấp nháy
   }
-  
+
   // --- Xử lý nút OK để chuyển bước chỉnh sửa hoặc lưu ---
   if (isButtonPressed(BTN_OK)) {
     Serial.println("Nut OK duoc nhan trong che do chinh.");
     nextStep(); // Chuyển sang bước tiếp theo
     blinkOn = true; // Đảm bảo phần tử mới hiển thị ngay sau khi chuyển bước
     lastBlinkTime = millis(); // Reset thời gian nhấp nháy
-    lcd.clear(); // Xóa màn hình để vẽ lại hoàn chỉnh cho bước mới (hoặc khi thoát)
+    // Khi chuyển bước hoặc thoát khỏi chế độ chỉnh sửa, cần reset cờ để lần sau vào lại sẽ vẽ lại
+    editTimeScreenDisplayed = false;
   }
 }
 
@@ -1151,17 +1175,39 @@ void handleTimerRunning() {
   unsigned long elapsed = 0;
   unsigned long remaining = 0;
 
-  if (timerRunning) { // Timer đang chạy bình thường
+  static bool timerRunningMessageDisplayed = false;
+  static bool hetGioMessageDisplayed = false;
+  static bool timerPausedMessageDisplayed = false;
+
+  // --- GIAI ĐOẠN 1: TIMER ĐANG CHẠY BÌNH THƯỜNG ---
+  if (timerRunning) {
+    // Reset cờ của các trạng thái khác khi CHUYỂN VÀO trạng thái này
+    // Điều này đảm bảo khi chuyển từ tạm dừng hoặc hết giờ về chạy,
+    // thông báo "Dem Nguoc Con:" sẽ được in lại.
+    hetGioMessageDisplayed = false;
+    timerPausedMessageDisplayed = false;
+
     elapsed = currentTime - timerStartTime;
-    lcd.setCursor(0, 0);
-    lcd.print("Dem Nguoc Con:  ");
+
+    // Chỉ in "Dem Nguoc Con:" một lần khi MỚI VÀO trạng thái chạy
+    if (!timerRunningMessageDisplayed) {
+      lcd.clear(); // Xóa toàn bộ màn hình để đảm bảo sạch
+      lcd.setCursor(0, 0);
+      lcd.print("Dem Nguoc Con:  "); // Đảm bảo đủ khoảng trắng để xóa ký tự cũ
+      timerRunningMessageDisplayed = true;
+      // Reset prevDisplayedTime để đảm bảo thời gian hiển thị đúng từ đầu
+      prevDisplayedHours = -1; prevDisplayedMinutes = -1; prevDisplayedSeconds = -1;
+    }
 
     if (elapsed >= timerDuration) { // Đếm ngược kết thúc
       remaining = 0;
       timerRunning = false;
-      timerAlarmSounding = true; // ĐẶT CỜ KHI HẾT GIỜ
+      timerAlarmSounding = true;    // ĐẶT CỜ KHI HẾT GIỜ
       timerAlarmStartTime = millis(); // Ghi lại thời điểm bắt đầu kêu
       Serial.println("TIMER HET GIO!");
+
+      // Reset cờ hiển thị của trạng thái chạy khi chuyển sang trạng thái báo động
+      timerRunningMessageDisplayed = false;
     } else { // Timer vẫn đang chạy và chưa hết giờ
       remaining = timerDuration - elapsed;
 
@@ -1191,42 +1237,73 @@ void handleTimerRunning() {
     }
   }
 
-  else if (timerAlarmSounding) { // Khi timer đã hết giờ và đang báo động
-    // Chỉ in thông báo "HET GIO!" một lần
+  // --- GIAI ĐOẠN 2: TIMER ĐÃ HẾT GIỜ VÀ ĐANG BÁO ĐỘNG ---
+  else if (timerAlarmSounding) {
+    // Reset cờ của các trạng thái khác khi CHUYỂN VÀO trạng thái này
+    timerRunningMessageDisplayed = false;
+    timerPausedMessageDisplayed = false;
+
+    // Chỉ in thông báo "HET GIO!" một lần khi MỚI VÀO trạng thái này
     if (!hetGioMessageDisplayed) {
-      lcd.setCursor(0, 0); // Đảm bảo dòng này được ghi đè
-      lcd.print("HET GIO!        "); // Hiển thị thông báo hết giờ
+      lcd.clear(); // Xóa màn hình cũ
+      lcd.setCursor(0, 0);
+      lcd.print("HET GIO!        "); // Hiển thị thông báo hết giờ (đảm bảo xóa hết dòng)
+      lcd.setCursor(0, 1);
+      lcd.print("Nhan OK de tat");
       hetGioMessageDisplayed = true; // Đánh dấu là đã in
-    }
-    lcd.setCursor(0, 1);
-    lcd.print("Nhan OK de tat");
 
-    // Logic để phát tiếng "tút tút tút" lặp lại mỗi khoảng thời gian
-    static unsigned long lastToneSequenceTime = 0;
-    const unsigned long TONE_SEQUENCE_INTERVAL_MS = 1000; // Khoảng thời gian giữa các lần kêu
-
-    if (currentTime - lastToneSequenceTime >= TONE_SEQUENCE_INTERVAL_MS) {
-      playTimerTone(); // Gọi hàm để phát một chuỗi "tút tút tút"
-      lastToneSequenceTime = currentTime;
+      // Quan trọng: Reset các biến của playTimerToneNonBlocking() khi MỚI vào trạng thái này
+      // Để nó bắt đầu lại chuỗi "tút tút tút" từ đầu.
+      currentBeepCount = 0;
+      nextBeepTime = 0;
+      isTonePlaying = false;
+      inTimerRestPeriod = false; // Đảm bảo không ở trạng thái nghỉ
     }
 
-    // Kiểm tra thời gian kêu tổng cộng
+    // --- GỌI HÀM PHÁT ÂM THANH KHÔNG CHẶN CHO HẸN GIỜ ---
+    playTimerToneNonBlocking();
+
+    // Kiểm tra thời gian kêu tổng cộng (tự động tắt sau ALARM_TONE_DURATION_MS)
     if (currentTime - timerAlarmStartTime >= ALARM_TONE_DURATION_MS) {
-      Serial.println("Da het 30s keu timer. Tu dong tat bao dong.");
+      Serial.println("Da het thoi gian keu timer. Tu dong tat bao dong.");
       noTone(BUZZER_PIN);
       timerAlarmSounding = false;
       timerDuration = 0;
       timerRemainingTime = 0;
-      lcd.clear(); // Xóa màn hình báo thức sau khi tự động tắt
+      lcd.clear();
       menuState = NORMAL; // Quay về màn hình đồng hồ bình thường
       resetClockDisplayFlags();
-      hetGioMessageDisplayed = false; // Reset cờ để lần sau còn hiển thị
+
+      // Quan trọng: Reset TẤT CẢ các cờ và biến liên quan khi thoát khỏi báo động
+      hetGioMessageDisplayed = false;
+      timerRunningMessageDisplayed = false;
+      timerPausedMessageDisplayed = false;
+      currentBeepCount = 0;
+      nextBeepTime = 0;
+      isTonePlaying = false;
+      inTimerRestPeriod = false;
+      prevDisplayedHours = -1; prevDisplayedMinutes = -1; prevDisplayedSeconds = -1; // Reset để đảm bảo hiển thị đúng khi về NORMAL
     }
   }
 
-  else { // Timer đang tạm dừng (không chạy và không hết giờ)
+  // --- GIAI ĐOẠN 3: TIMER ĐANG TẠM DỪNG HOẶC CHƯA CHẠY ---
+  // Điều kiện: timerRunning là false VÀ timerAlarmSounding là false
+  else {
+    // Reset cờ của các trạng thái khác khi CHUYỂN VÀO trạng thái này
+    timerRunningMessageDisplayed = false;
+    hetGioMessageDisplayed = false;
+
+    // Chỉ in "Dem Nguoc Con:" một lần khi MỚI VÀO trạng thái tạm dừng/chưa chạy
+    if (!timerPausedMessageDisplayed) {
+      lcd.clear(); // Xóa toàn bộ màn hình để đảm bảo sạch
+      lcd.setCursor(0, 0);
+      lcd.print("Dem Nguoc Con:  "); // Đảm bảo đủ khoảng trắng để xóa ký tự cũ
+      timerPausedMessageDisplayed = true;
+      // Reset prevDisplayedTime để đảm bảo hiển thị đúng từ đầu
+      prevDisplayedHours = -1; prevDisplayedMinutes = -1; prevDisplayedSeconds = -1;
+    }
+
     // Tính toán và hiển thị thời gian tạm dừng (HH:MM:SS)
-    // Sử dụng timerRemainingTime nếu có, hoặc timerDuration nếu chưa chạy
     remaining = (timerRemainingTime > 0) ? timerRemainingTime : timerDuration;
 
     long hours = remaining / 3600000;
@@ -1244,7 +1321,7 @@ void handleTimerRunning() {
       lcd.print(":");
       if (seconds < 10) lcd.print("0");
       lcd.print(seconds);
-      lcd.print("   "); // Khoảng trắng để xóa ký tự thừa
+      lcd.print("   ");
 
       prevDisplayedHours = hours;
       prevDisplayedMinutes = minutes;
@@ -1252,7 +1329,7 @@ void handleTimerRunning() {
     }
   }
 
-  // Xử lý nút OK để quay lại menu timer (hoặc tắt báo hết giờ)
+  // --- XỬ LÝ NÚT OK (Được kiểm tra liên tục, không bị chặn) ---
   if (isButtonPressed(BTN_OK)) {
     if (timerAlarmSounding) { // Nếu đang báo động hết giờ
       Serial.println("Tat thong bao HET GIO");
@@ -1262,15 +1339,26 @@ void handleTimerRunning() {
       timerRemainingTime = 0;
       menuState = TIMER_MENU; // Quay lại menu timer
       lcd.clear();
-      hetGioMessageDisplayed = false; // Reset cờ để lần sau còn hiển thị
-      // Reset prevDisplayedTime để đảm bảo hiển thị đúng khi quay lại
-      prevDisplayedHours = -1; prevDisplayedMinutes = -1; prevDisplayedSeconds = -1;
+
+      // QUAN TRỌNG: RESET TẤT CẢ các cờ và biến liên quan khi thoát khỏi báo động
+      hetGioMessageDisplayed = false;
+      timerRunningMessageDisplayed = false;
+      timerPausedMessageDisplayed = false;
+      currentBeepCount = 0;
+      nextBeepTime = 0;
+      isTonePlaying = false;
+      inTimerRestPeriod = false; // Đảm bảo cờ nghỉ cũng được reset
+      prevDisplayedHours = -1; prevDisplayedMinutes = -1; prevDisplayedSeconds = -1; // Reset để đảm bảo hiển thị đúng khi quay lại menu
     } else { // Nếu không phải trạng thái báo động hết giờ, chỉ đơn thuần thoát về menu
       Serial.println("Thoat Timer Display ve Timer Menu");
       menuState = TIMER_MENU; // Quay lại menu timer
       lcd.clear();
       noTone(BUZZER_PIN);
-      // Reset prevDisplayedTime
+
+      // QUAN TRỌNG: Reset TẤT CẢ các cờ và biến liên quan khi thoát khỏi màn hình hẹn giờ
+      timerRunningMessageDisplayed = false;
+      hetGioMessageDisplayed = false;
+      timerPausedMessageDisplayed = false;
       prevDisplayedHours = -1; prevDisplayedMinutes = -1; prevDisplayedSeconds = -1;
     }
   }
@@ -1428,9 +1516,6 @@ void handleStopwatchMenu() {
  * @brief Màn hình xác nhận đặt lại thời gian RTC về thời gian biên dịch.
  */
 void handleResetRTCConfirm() {
-  // Biến static này giúp đảm bảo thông báo chỉ in một lần khi vào trạng thái
-  static bool confirmMessageDisplayed = false;
-
   // Chỉ in thông báo xác nhận nếu chưa được in
   if (!confirmMessageDisplayed) {
     lcd.clear(); // Xóa màn hình trước đó
@@ -1469,8 +1554,14 @@ void handleResetRTCConfirm() {
   }
 }
 //-----------------------------------------------------------------------------------------------------------------------------
+/**
+ * @brief Quản lý trạng thái báo thức đang kêu.
+ */
 void handleAlarmSounding() {
   unsigned long currentTime = millis();
+
+  // Biến cờ để đảm bảo thông báo chỉ in một lần
+  static bool alarmMessageDisplayed = false; // Đảm bảo biến này được khai báo static hoặc toàn cục
 
   // Chỉ in thông báo "BAO THUC!" một lần khi mới vào trạng thái này
   if (!alarmMessageDisplayed) {
@@ -1482,79 +1573,109 @@ void handleAlarmSounding() {
     alarmMessageDisplayed = true; // Đánh dấu là đã in
   }
 
-  // --- Logic phát âm báo và kiểm tra thời gian ---
+  // --- Logic phát âm báo (KHÔNG CHẶN) ---
   // Vẫn trong thời gian kêu 30s, tiếp tục phát tone
   if (currentTime - alarmSoundingStartTime < ALARM_SOUND_DURATION_MS) {
-    playAlarmTone(); // Hàm này sẽ phát giai điệu một lần mỗi khi được gọi
+    playAlarmToneNonBlocking(); 
   } else {
     // Đã kêu đủ 30 giây, tự động tắt báo thức
     Serial.println("Bao thuc da keu du 30s. Tu dong tat.");
-    noTone(BUZZER_PIN);          // Tắt còi
+    noTone(BUZZER_PIN);             // Tắt còi
     alarmCurrentlySounding = false; // Đặt cờ là không còn kêu nữa
-    alarmTriggered = false;       // Tắt cờ báo thức (để không kêu lại cho đến ngày mai)
-    lcd.clear();                  // Xóa màn hình báo thức
-    menuState = NORMAL;           // QUAY VỀ MÀN HÌNH ĐỒNG HỒ BÌNH THƯỜNG
+    alarmTriggered = false;         // Tắt cờ báo thức (để không kêu lại cho đến ngày mai)
+    lcd.clear(); 
+    menuState = NORMAL;             // QUAY VỀ MÀN HÌNH ĐỒNG HỒ BÌNH THƯỜNG
     resetClockDisplayFlags();
-    alarmMessageDisplayed = false; // Reset cờ cho lần sau
+    alarmMessageDisplayed = false;  // Reset cờ cho lần sau
+    // Đảm bảo reset cả biến của playAlarmToneNonBlocking() khi thoát khỏi trạng thái này
+    currentAlarmNoteIndex = 0;
+    nextAlarmNoteTime = 0;
   }
 
   // --- Xử lý nút OK để tắt báo thức thủ công ---
   if (isButtonPressed(BTN_OK)) {
     Serial.println("BAO THUC DA TAT BANG NUT OK!");
-    noTone(BUZZER_PIN);          // Đảm bảo tắt còi ngay lập tức
+    noTone(BUZZER_PIN);             // Đảm bảo tắt còi ngay lập tức
     alarmCurrentlySounding = false; // Tắt cờ báo động
-    alarmTriggered = false;       // Tắt báo thức
-    lcd.clear();                  // Xóa màn hình báo thức
-    menuState = NORMAL;           // QUAY VỀ MÀN HÌNH ĐỒNG HỒ BÌNH THƯỜNG
+    alarmTriggered = false;         // Tắt báo thức
+    lcd.clear();
+    menuState = NORMAL;             // QUAY VỀ MÀN HÌNH ĐỒNG HỒ BÌNH THƯỜNG
     resetClockDisplayFlags();
-    alarmMessageDisplayed = false; // Reset cờ cho lần sau
+    alarmMessageDisplayed = false;  // Reset cờ cho lần sau
+    // Đảm bảo reset cả biến của playAlarmToneNonBlocking() khi thoát khỏi trạng thái này
+    currentAlarmNoteIndex = 0;
+    nextAlarmNoteTime = 0;
   }
 }
 
 /**
- * @brief Phát âm báo vui vẻ cho báo thức.
+ * @brief Phát giai điệu báo thức một cách không chặn.
+ * Cần được gọi liên tục trong loop() hoặc handleAlarmSounding().
  */
-void playAlarmTone() {
-  // Giai điệu: C4 - E4 - G4 - C5 - G4 - E4 - C4 (Lên xuống của hợp âm Đô trưởng)
-  int melody[] = {
-    NOTE_C4, NOTE_E4, NOTE_G4, NOTE_C5, NOTE_G4, NOTE_E4, NOTE_C4
-  };
-  // Độ dài nốt (ví dụ: 4 = nốt đen, 8 = nốt móc đơn)
-  int noteDurations[] = {
-    8, 8, 8, 4, 8, 8, 4
-  }; // Giá trị càng nhỏ, nốt càng dài (1000/giá trị)
+void playAlarmToneNonBlocking() {
+  // Nếu báo thức không còn kêu hoặc chưa đến thời điểm phát nốt tiếp theo, thoát
+  if (!alarmCurrentlySounding || millis() < nextAlarmNoteTime) {
+    return;
+  }
 
-  // Số lượng nốt trong giai điệu
-  int numNotes = sizeof(melody) / sizeof(melody[0]);
+  // Nếu đến đây, nghĩa là đã đến lúc phát nốt tiếp theo
+  int noteFreq = alarmMelody[currentAlarmNoteIndex];
+  int noteDurationMs = 1000 / alarmNoteDurations[currentAlarmNoteIndex];
 
-  for (int thisNote = 0; thisNote < numNotes; thisNote++) {
-    // Điều kiện này giúp dừng giai điệu ngay lập tức nếu báo thức bị tắt
-    // (do nhấn nút OK hoặc hết 30s)
-    if (!alarmCurrentlySounding) {
-        noTone(BUZZER_PIN); // Đảm bảo tắt còi nếu thoát vòng lặp
-        return; // Thoát hàm ngay lập tức
+  tone(BUZZER_PIN, noteFreq, noteDurationMs); // Phát nốt với duration
+  nextAlarmNoteTime = millis() + noteDurationMs + (noteDurationMs / 10); // Nghỉ 10% thời gian nốt
+  currentAlarmNoteIndex++; // Chuyển sang nốt tiếp theo
+
+  // Nếu đã phát hết tất cả các nốt trong giai điệu, quay lại nốt đầu tiên để lặp lại
+  if (currentAlarmNoteIndex >= NUM_ALARM_NOTES) {
+    currentAlarmNoteIndex = 0; // Quay lại nốt đầu tiên
+    nextAlarmNoteTime = millis() + 1000; // Nghỉ 1 giây trước khi bắt đầu lại giai điệu
+  }
+}
+
+/**
+ * @brief Phát âm báo "tút tút tút" cho hẹn giờ một cách không chặn.
+ * Gồm 3 tiếng 'tút', sau đó có khoảng nghỉ.
+ * Cần được gọi liên tục trong hàm xử lý trạng thái hẹn giờ hết.
+ */
+void playTimerToneNonBlocking() {
+  unsigned long currentTime = millis();
+
+  // --- GIAI ĐOẠN NGHỈ GIỮA CÁC CHUỖI TÚT TÚT TÚT ---
+  if (inTimerRestPeriod) {
+    if (currentTime >= nextBeepTime) {
+      // Đã hết thời gian nghỉ, bắt đầu lại chuỗi "tút tút tút"
+      inTimerRestPeriod = false;
+      currentBeepCount = 0;       // Reset để bắt đầu lại từ tiếng 'tút' đầu tiên
+      // nextBeepTime sẽ được tính lại khi tiếng 'tút' đầu tiên kêu
+      isTonePlaying = false;      // Đảm bảo còi không kêu
+      noTone(BUZZER_PIN);
+    } else {
+      // Vẫn đang trong thời gian nghỉ, không làm gì cả
+      return; 
     }
-
-    // Tính toán độ dài thực tế của nốt (miligiây)
-    // Ví dụ: 1000 / 4 = 250ms (nốt đen)
-    int noteDuration = 1000 / noteDurations[thisNote];
-    
-    // Phát nốt
-    tone(BUZZER_PIN, melody[thisNote], noteDuration);
-    int pauseBetweenNotes = noteDuration * 1.1; 
-    delay(pauseBetweenNotes);
   }
-  noTone(BUZZER_PIN); // Đảm bảo tắt còi sau khi giai điệu kết thúc một lần
-}
 
-/**
- * @brief Phát âm báo "tút tút tút" cho hẹn giờ.
- */
-void playTimerTone() {
-  for (int i = 0; i < 3; i++) { // Lặp lại 3 lần tiếng "tút"
-    tone(BUZZER_PIN, 800); // Tần số 800 Hz
-    delay(150);            // Kêu 150ms
-    noTone(BUZZER_PIN);
-    delay(100);            // Nghỉ 100ms
+  // --- GIAI ĐOẠN PHÁT 3 TIẾNG TÚT TÚT TÚT ---
+  // Điều kiện: Chưa phát đủ 3 tiếng VÀ đã đến thời điểm của tiếng 'tút' tiếp theo
+  if (currentBeepCount < 3 && currentTime >= nextBeepTime) {
+    if (!isTonePlaying) { // Nếu chưa có tiếng nào đang kêu (bắt đầu một tiếng mới)
+      tone(BUZZER_PIN, 800);      // Tần số 800 Hz
+      nextBeepTime = currentTime + 150; // Sẽ tắt sau 150ms
+      isTonePlaying = true;
+    } else { // Nếu tiếng 'tút' đang kêu (150ms đã trôi qua), thì tắt và nghỉ
+      noTone(BUZZER_PIN);
+      nextBeepTime = currentTime + 100; // Nghỉ 100ms giữa các tiếng 'tút'
+      isTonePlaying = false;
+      currentBeepCount++; // Tăng số tiếng 'tút' đã phát
+    }
+  } 
+  // --- KẾT THÚC CHUỖI 3 TIẾNG TÚT VÀ BẮT ĐẦU GIAI ĐOẠN NGHỈ ---
+  else if (currentBeepCount >= 3) {
+    noTone(BUZZER_PIN); // Đảm bảo còi tắt sau tiếng 'tút' cuối cùng
+    nextBeepTime = currentTime + TIMER_SEQUENCE_REST_INTERVAL_MS; // Bắt đầu khoảng nghỉ 2 giây
+    inTimerRestPeriod = true;     // Đặt cờ đang trong thời gian nghỉ
+    // Không reset currentBeepCount ở đây. Nó sẽ được reset khi hết thời gian nghỉ
+    // hoặc khi báo động hẹn giờ bị tắt hoàn toàn.
   }
 }
